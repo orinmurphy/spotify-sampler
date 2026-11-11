@@ -36,6 +36,12 @@ final class StemSeparator {
         state = FileManager.default.fileExists(atPath: Self.marker.path) ? .ready : .notInstalled
     }
 
+    static var isAppleSilicon: Bool {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 && value == 1
+    }
+
     static func findUV() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return ["/opt/homebrew/bin/uv", "/usr/local/bin/uv", "\(home)/.local/bin/uv", "\(home)/.cargo/bin/uv"]
@@ -46,13 +52,18 @@ final class StemSeparator {
         state = .installing("Creating Python environment…")
         do {
             try FileManager.default.createDirectory(at: Self.root, withIntermediateDirectories: true)
-            let packages = ["torch<2.9", "torchaudio<2.9", "demucs==4.0.1", "soundfile", "numpy<2.3"]
+            let packages = ["torch>=2.5,<2.9", "torchaudio>=2.5,<2.9", "demucs==4.0.1", "soundfile", "numpy"]
             if let uv = Self.findUV() {
-                try await run(uv, ["venv", "--python", "3.12", "--allow-existing", Self.envDir.path])
+                // Explicit native arm64 interpreter: an Intel Python (e.g. /usr/local Homebrew) would pull
+                // an ancient x86 PyTorch without Apple-GPU support.
+                let arch = Self.isAppleSilicon ? "aarch64" : "x86_64"
+                try? FileManager.default.removeItem(at: Self.envDir)
+                try await run(uv, ["venv", "--python", "cpython-3.12-macos-\(arch)-none",
+                                   "--python-preference", "only-managed", Self.envDir.path])
                 state = .installing("Downloading PyTorch + Demucs (~1–2 GB)…")
                 try await run(uv, ["pip", "install", "--python", Self.python.path] + packages)
             } else {
-                let py = ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]
+                let py = ["/opt/homebrew/bin/python3", "/usr/bin/python3", "/usr/local/bin/python3"]
                     .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
                 try await run(py, ["-m", "venv", Self.envDir.path])
                 state = .installing("Downloading PyTorch + Demucs (~1–2 GB)…")
