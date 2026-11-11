@@ -131,3 +131,35 @@ final class PadModeTests: XCTestCase {
         XCTAssertTrue(model.playing.contains(a.id) && model.playing.contains(b.id), "poly: both should play")
     }
 }
+
+final class PadMoveTests: XCTestCase {
+    override class func setUp() {
+        setenv("SPOTIFY_SAMPLER_DATA_DIR", NSTemporaryDirectory() + "sampler-test-\(UUID().uuidString)", 1)
+    }
+
+    @MainActor
+    func testMoveSwapCopy() {
+        let model = AppModel()
+        let source = AudioSource(sampleRate: 48_000, frames: [Float](repeating: 0, count: 4_800))
+        let a = Sample(source: source, params: SampleParams(name: "A"))
+        let b = Sample(source: source, params: SampleParams(name: "B"))
+        model.pads = Array(repeating: nil, count: 16)
+        model.pads[0] = a
+        model.pads[1] = b
+
+        model.movePad(from: 0, to: 5, copy: false) // into empty slot
+        XCTAssertNil(model.pads[0]); XCTAssert(model.pads[5] === a); XCTAssertEqual(model.selectedPad, 5)
+
+        model.movePad(from: 5, to: 1, copy: false) // onto filled slot = swap
+        XCTAssert(model.pads[1] === a); XCTAssert(model.pads[5] === b)
+
+        model.movePad(from: 1, to: 9, copy: true) // option-drop = duplicate
+        XCTAssert(model.pads[1] === a)
+        XCTAssertEqual(model.pads[9]?.p.name, "A")
+        XCTAssert(model.pads[9] !== a && model.pads[9]?.source === a.source)
+
+        let provider = model.dragProvider(for: 1)
+        XCTAssert(provider.hasItemConformingToTypeIdentifier(AppModel.padDragType))
+        XCTAssert(provider.hasItemConformingToTypeIdentifier("public.file-url"), "still drags a WAV to other apps")
+    }
+}

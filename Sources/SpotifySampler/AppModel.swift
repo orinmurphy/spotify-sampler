@@ -485,9 +485,30 @@ final class AppModel {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(sample.safeFileName).wav")
         try? FileManager.default.removeItem(at: url)
-        guard let buffer = try? SamplerEngine.renderOffline(sample, projectBPM: projectBPM),
-              (try? SamplerEngine.writeWAV(buffer, to: url)) != nil else { return NSItemProvider() }
-        return NSItemProvider(contentsOf: url) ?? NSItemProvider()
+        let provider = (try? SamplerEngine.renderOffline(sample, projectBPM: projectBPM))
+            .flatMap { (try? SamplerEngine.writeWAV($0, to: url)) != nil ? NSItemProvider(contentsOf: url) : nil }
+            ?? NSItemProvider()
+        // Private type so pads can be rearranged inside the app; other apps only see the WAV.
+        provider.registerDataRepresentation(forTypeIdentifier: Self.padDragType, visibility: .ownProcess) { done in
+            done(Data(String(index).utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    static let padDragType = "local.spotifysampler.pad"
+
+    /// Drop pad `from` onto pad `to`: moves into an empty slot, swaps with a filled one,
+    /// or (copy) duplicates it, sharing the same audio.
+    func movePad(from: Int, to: Int, copy: Bool) {
+        guard from != to, pads.indices.contains(from), pads.indices.contains(to), let source = pads[from] else { return }
+        if copy {
+            if let old = pads[to] { sampler.remove(old); playing.remove(old.id) }
+            pads[to] = Sample(source: source.source, params: source.p)
+        } else {
+            pads.swapAt(from, to)
+        }
+        selectedPad = to
     }
 
     // MARK: Keyboard

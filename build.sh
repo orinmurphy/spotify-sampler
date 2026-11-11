@@ -36,6 +36,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.4</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>UTExportedTypeDeclarations</key>
+    <array><dict>
+        <key>UTTypeIdentifier</key><string>local.spotifysampler.pad</string>
+        <key>UTTypeDescription</key><string>Spotify Sampler pad</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+    </dict></array>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Spotify Sampler records Spotify's audio output so you can turn it into samples.</string>
     <key>NSAppleEventsUsageDescription</key>

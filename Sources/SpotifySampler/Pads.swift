@@ -17,6 +17,7 @@ struct PadGrid: View {
 struct PadView: View {
     @Environment(AppModel.self) private var model
     let index: Int
+    @State private var dropTarget = false
 
     var body: some View {
         let sample = model.pads[index]
@@ -49,7 +50,8 @@ struct PadView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(playing ? Color.amber : Color.padIdle))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(selected ? Color.amber : Color.white.opacity(0.06), lineWidth: selected ? 2 : 1)
+                .strokeBorder(dropTarget ? Color.white : selected ? Color.amber : Color.white.opacity(0.06),
+                              style: StrokeStyle(lineWidth: dropTarget || selected ? 2 : 1, dash: dropTarget ? [6, 4] : []))
         )
         .foregroundStyle(playing ? Color.black : Color.primary)
         .contentShape(Rectangle())
@@ -58,6 +60,15 @@ struct PadView: View {
             model.trigger(index)
         }
         .onDrag { model.dragProvider(for: index) }
+        .onDrop(of: [AppModel.padDragType], isTargeted: $dropTarget) { providers in
+            guard let provider = providers.first else { return false }
+            let copy = NSEvent.modifierFlags.contains(.option)
+            _ = provider.loadDataRepresentation(forTypeIdentifier: AppModel.padDragType) { data, _ in
+                guard let data, let from = Int(String(decoding: data, as: UTF8.self)) else { return }
+                DispatchQueue.main.async { model.movePad(from: from, to: index, copy: copy) }
+            }
+            return true
+        }
         .contextMenu {
             if let sample {
                 Button("Export WAV") { model.export(sample) }
