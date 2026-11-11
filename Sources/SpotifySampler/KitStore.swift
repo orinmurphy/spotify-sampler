@@ -23,6 +23,9 @@ struct KitInfo: Identifiable, Hashable {
 
 enum KitStore {
     static let root: URL = {
+        if let override = ProcessInfo.processInfo.environment["SPOTIFY_SAMPLER_DATA_DIR"] {
+            return URL(fileURLWithPath: override).appendingPathComponent("Kits", isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("SpotifySampler/Kits", isDirectory: true)
     }()

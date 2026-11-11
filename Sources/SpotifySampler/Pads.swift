@@ -11,7 +11,6 @@ struct PadGrid: View {
                 }
             }
         }
-        .frame(height: 260)
     }
 }
 

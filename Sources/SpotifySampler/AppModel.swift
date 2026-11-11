@@ -373,7 +373,7 @@ final class AppModel {
     private func restoreLastKit() {
         kits = KitStore.list()
         let last = UserDefaults.standard.string(forKey: "currentKit")
-        if let id = last ?? kits.first?.id, kits.contains(where: { $0.id == id }) {
+        if let id = last.flatMap({ l in kits.first { $0.id == l } })?.id ?? kits.first?.id {
             openKit(id)
         } else {
             kitID = UUID().uuidString
@@ -382,6 +382,7 @@ final class AppModel {
     }
 
     func autosave() {
+        guard !kitID.isEmpty else { return }
         let kit = KitStore.encode(name: kitName, bpm: projectBPM, pads: pads)
         guard let data = try? JSONEncoder().encode(kit), data != lastSaved else { return }
         let isEmpty = pads.allSatisfy { $0 == nil }
@@ -413,6 +414,7 @@ final class AppModel {
             UserDefaults.standard.set(id, forKey: "currentKit")
         } catch {
             hint = "Couldn't open kit: \(error.localizedDescription)"
+            if kitID.isEmpty { kitID = UUID().uuidString }
         }
         kits = KitStore.list()
     }

@@ -24,6 +24,10 @@ private func clickTrack(bpm: Double, seconds: Double, rate: Double = 48_000) -> 
 }
 
 final class AnalysisTests: XCTestCase {
+    override class func setUp() {
+        setenv("SPOTIFY_SAMPLER_DATA_DIR", NSTemporaryDirectory() + "sampler-test-\(UUID().uuidString)", 1)
+    }
+
     func testTempoDetection() throws {
         for bpm in [92.0, 128.0, 140.0] {
             let source = AudioSource(sampleRate: 48_000, frames: clickTrack(bpm: bpm, seconds: 8))

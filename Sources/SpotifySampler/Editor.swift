@@ -3,6 +3,7 @@ import SwiftUI
 struct SampleEditor: View {
     @Environment(AppModel.self) private var model
     @Bindable var sample: Sample
+    var waveHeight: CGFloat = 140
     @State private var zoom: Double = 1
     @State private var center: Double = 0.5
     @State private var confirmStemInstall = false
@@ -37,7 +38,7 @@ struct SampleEditor: View {
             }
 
             RegionEditor(sample: sample, visibleStart: visible.0, visibleEnd: visible.1)
-                .frame(minHeight: 110)
+                .frame(height: waveHeight)
             if zoom > 1 {
                 Slider(value: $center, in: (0.5 / zoom)...(1 - 0.5 / zoom)).controlSize(.mini)
             }

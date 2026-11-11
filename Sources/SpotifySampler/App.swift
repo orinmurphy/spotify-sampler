@@ -14,10 +14,11 @@ struct SpotifySamplerApp: App {
         WindowGroup("Spotify Sampler") {
             ContentView()
                 .environment(model)
-                .frame(minWidth: 1120, minHeight: 860)
+                .frame(minWidth: 1120, minHeight: 640)
                 .preferredColorScheme(.dark)
                 .tint(.amber)
         }
+        .defaultSize(width: 1180, height: 820)
         .windowResizability(.contentMinSize)
         .commands {
             CommandMenu("Capture") {
@@ -56,16 +57,24 @@ struct ContentView: View {
             }
             CaptureStrip()
             Divider()
-            Group {
+            // Editor takes whatever the pads leave; the waveform grows/shrinks with it and the
+            // controls scroll if the window is very short.
+            GeometryReader { g in
                 if let sample = model.selected {
-                    SampleEditor(sample: sample).id(sample.id)
+                    ScrollView {
+                        SampleEditor(sample: sample, waveHeight: max(60, g.size.height - 225)).id(sample.id)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
                 } else {
-                    EmptyEditor()
+                    EmptyEditor().frame(width: g.size.width, height: g.size.height)
                 }
             }
-            .frame(maxHeight: .infinity)
+            .frame(minHeight: 120, maxHeight: .infinity)
             Divider()
-            PadGrid().padding(16)
+            PadGrid()
+                .frame(minHeight: 150, idealHeight: 260, maxHeight: 300)
+                .padding(16)
+                .layoutPriority(1)
         }
         .background(Color(white: 0.07))
     }
@@ -165,7 +174,7 @@ struct CaptureStrip: View {
                         .padding(8)
                 }
             }
-            .frame(height: 72)
+            .frame(minHeight: 40, idealHeight: 72, maxHeight: 72)
 
             HStack(spacing: 14) {
                 Text("Buffer").foregroundStyle(.secondary)
