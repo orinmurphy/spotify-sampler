@@ -2,123 +2,192 @@ import AVFoundation
 import Foundation
 import Observation
 
-@Observable
-final class Sample: Identifiable {
-    let id = UUID()
-    var name: String
+/// Immutable captured audio. Several pads (e.g. chopped slices) can share one source.
+final class AudioSource: Identifiable {
+    let id: UUID
     let sampleRate: Double
     /// Interleaved stereo float frames.
     let frames: [Float]
+    let mono: [Float]
     let peaks: [Float]
-
-    // Region (0...1 of the full sample) and playback params.
-    var start: Double = 0
-    var end: Double = 1
-    var loop = false
-    var reverse = false
-    var semitones: Double = 0
-    var gain: Double = 1
+    let bpm: Double?
+    let firstBeat: Double
 
     var frameCount: Int { frames.count / 2 }
     var duration: Double { Double(frameCount) / sampleRate }
-    var regionDuration: Double { duration * (end - start) / pow(2, semitones / 12) }
-
-    init(name: String, sampleRate: Double, frames: [Float]) {
-        self.name = name
-        self.sampleRate = sampleRate
-        self.frames = frames
-        self.peaks = Sample.computePeaks(frames, buckets: 1200)
-    }
-
     var isSilent: Bool { peaks.allSatisfy { $0 < 0.0001 } }
 
-    static func computePeaks(_ frames: [Float], buckets: Int) -> [Float] {
-        let n = frames.count / 2
-        guard n > 0 else { return [] }
-        let count = min(buckets, n)
-        let per = Double(n) / Double(count)
-        var out = [Float](repeating: 0, count: count)
-        frames.withUnsafeBufferPointer { f in
-            for b in 0..<count {
-                let a = Int(Double(b) * per), z = min(Int(Double(b + 1) * per), n)
-                var m: Float = 0
-                var i = a
-                while i < z {
-                    m = max(m, abs(f[i * 2]), abs(f[i * 2 + 1]))
-                    i += 1
-                }
-                out[b] = m
-            }
-        }
-        return out
+    init(id: UUID = UUID(), sampleRate: Double, frames: [Float]) {
+        self.id = id
+        self.sampleRate = sampleRate
+        self.frames = frames
+        mono = Analysis.mono(frames)
+        peaks = Analysis.peaks(frames, from: 0, to: frames.count / 2, buckets: 1200)
+        let tempo = Analysis.tempo(mono, sampleRate: sampleRate)
+        bpm = tempo?.bpm
+        firstBeat = tempo?.firstBeat ?? 0
     }
 
-    private var regionRange: (Int, Int) {
-        let a = Int(start * Double(frameCount))
-        let b = max(Int(end * Double(frameCount)), a + 1)
-        return (a, min(b, frameCount))
-    }
-
-    /// Region rendered as deinterleaved stereo, reversed if needed, with short fades to avoid clicks.
-    func makeBuffer(format: AVAudioFormat) -> AVAudioPCMBuffer? {
-        let (a, b) = regionRange
+    /// Deinterleaved copy of frames [a, b), optionally reversed.
+    func buffer(from a: Int, to b: Int, reverse: Bool, format: AVAudioFormat) -> AVAudioPCMBuffer? {
         let n = b - a
         guard n > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
-              let ch = buffer.floatChannelData else { return nil }
-        buffer.frameLength = AVAudioFrameCount(n)
-        let left = ch[0], right = ch[1]
-        let fade = min(Int(sampleRate * 0.003), n / 2)
-        let reverse = self.reverse
+              let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
+              let ch = buf.floatChannelData else { return nil }
+        buf.frameLength = AVAudioFrameCount(n)
+        let l = ch[0], r = ch[1]
         frames.withUnsafeBufferPointer { f in
             for i in 0..<n {
-                let src = reverse ? (b - 1 - i) : (a + i)
-                var g: Float = 1
-                if fade > 0 {
-                    if i < fade { g = Float(i) / Float(fade) } else if i >= n - fade { g = Float(n - 1 - i) / Float(fade) }
-                }
-                left[i] = f[src * 2] * g
-                right[i] = f[src * 2 + 1] * g
+                let s = reverse ? (b - 1 - i) : (a + i)
+                l[i] = f[s * 2]
+                r[i] = f[s * 2 + 1]
             }
         }
-        return buffer
+        return buf
+    }
+}
+
+enum PlayMode: String, Codable, CaseIterable, Identifiable {
+    case oneShot = "One-shot", gate = "Gate"
+    var id: String { rawValue }
+}
+
+enum PitchMode: String, Codable, CaseIterable, Identifiable {
+    case varispeed = "Varispeed", stretch = "Time-stretch"
+    var id: String { rawValue }
+}
+
+enum FilterType: String, Codable, CaseIterable, Identifiable {
+    case off = "Off", lowPass = "Low-pass", highPass = "High-pass"
+    var id: String { rawValue }
+}
+
+/// Everything about a pad that is saved in a kit.
+struct SampleParams: Codable, Equatable {
+    var name: String
+    var start = 0.0
+    var end = 1.0
+    var loop = false
+    var reverse = false
+    var semitones = 0.0
+    var gain = 1.0
+    var playMode = PlayMode.oneShot
+    var choke = 0
+    var pitchMode = PitchMode.varispeed
+    var syncTempo = false
+    var attack = 0.0 // ms
+    var decay = 0.0 // ms
+    var sustain = 1.0 // 0...1
+    var release = 15.0 // ms
+    var filter = FilterType.off
+    var cutoff = 2000.0 // Hz
+    var resonance = 0.3 // 0...1
+}
+
+@Observable
+final class Sample: Identifiable {
+    let id = UUID()
+    let source: AudioSource
+    var p: SampleParams
+
+    init(source: AudioSource, params: SampleParams) {
+        self.source = source
+        p = params
     }
 
-    /// Writes the region as a 24-bit WAV with pitch (varispeed), reverse and gain baked in.
-    func writeWAV(to url: URL) throws {
-        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
-        guard let region = makeBuffer(format: format) else { throw CocoaError(.fileWriteUnknown) }
-        let rate = pow(2, semitones / 12)
-        let inN = Int(region.frameLength)
-        let outN = max(Int(Double(inN) / rate), 1)
-        let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(outN))!
-        out.frameLength = AVAudioFrameCount(outN)
-        let g = Float(gain)
+    var sampleRate: Double { source.sampleRate }
+    var frameCount: Int { source.frameCount }
+    var duration: Double { source.duration }
+
+    var frameRange: (Int, Int) {
+        let a = Int(p.start * Double(frameCount))
+        let b = max(Int(p.end * Double(frameCount)), a + 1)
+        return (min(a, frameCount - 1), min(b, frameCount))
+    }
+
+    /// Tempo-sync ratio to the project tempo (1 when not syncing or tempo unknown).
+    func syncRatio(projectBPM: Double) -> Double {
+        guard p.syncTempo, let bpm = source.bpm, bpm > 0 else { return 1 }
+        return projectBPM / bpm
+    }
+
+    /// Overall playback speed (affects length).
+    func speed(projectBPM: Double) -> Double {
+        let sync = syncRatio(projectBPM: projectBPM)
+        return p.pitchMode == .varispeed ? sync * pow(2, p.semitones / 12) : sync
+    }
+
+    func regionDuration(projectBPM: Double) -> Double {
+        let (a, b) = frameRange
+        return Double(b - a) / sampleRate / speed(projectBPM: projectBPM)
+    }
+
+    /// Region with envelope baked in (attack/decay/sustain + click-free edges).
+    /// For loops, the envelope only shapes the first pass; `loopBody` is the sustained repeat.
+    func makeBuffers(format: AVAudioFormat) -> (first: AVAudioPCMBuffer, loopBody: AVAudioPCMBuffer?)? {
+        let (a, b) = frameRange
+        guard let first = source.buffer(from: a, to: b, reverse: p.reverse, format: format) else { return nil }
+        let n = Int(first.frameLength)
+        let sr = sampleRate
+        let edge = min(Int(sr * 0.003), n / 2)
+        let atk = max(Int(p.attack / 1000 * sr), edge)
+        let dec = Int(p.decay / 1000 * sr)
+        let sus = Float(p.sustain)
+
+        func env(_ i: Int) -> Float {
+            if i < atk { return Float(i) / Float(max(atk, 1)) }
+            if i < atk + dec { return 1 - (1 - sus) * Float(i - atk) / Float(max(dec, 1)) }
+            return sus
+        }
         for c in 0..<2 {
-            let src = region.floatChannelData![c], dst = out.floatChannelData![c]
-            for j in 0..<outN {
-                let pos = Double(j) * rate
-                let i0 = min(Int(pos), inN - 1), i1 = min(i0 + 1, inN - 1)
-                let t = Float(pos - Double(i0))
-                dst[j] = max(-1, min(1, (src[i0] * (1 - t) + src[i1] * t) * g))
+            let d = first.floatChannelData![c]
+            for i in 0..<n {
+                var g = env(i)
+                if !p.loop, edge > 0, i >= n - edge { g *= Float(n - 1 - i) / Float(edge) }
+                d[i] *= g
             }
         }
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: 2,
-            AVLinearPCMBitDepthKey: 24,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-        ]
-        let file = try AVAudioFile(forWriting: url, settings: settings,
-                                   commonFormat: .pcmFormatFloat32, interleaved: false)
-        try file.write(from: out)
+        guard p.loop else { return (first, nil) }
+
+        // Loop body: sustain level, tiny crossfade-free edges to avoid a click at the seam.
+        guard let body = source.buffer(from: a, to: b, reverse: p.reverse, format: format) else { return (first, nil) }
+        for c in 0..<2 {
+            let d = body.floatChannelData![c]
+            for i in 0..<n {
+                var g = sus
+                if edge > 0 {
+                    if i < edge { g *= Float(i) / Float(edge) } else if i >= n - edge { g *= Float(n - 1 - i) / Float(edge) }
+                }
+                d[i] *= g
+            }
+        }
+        // First pass must also end cleanly into the loop.
+        for c in 0..<2 {
+            let d = first.floatChannelData![c]
+            for i in max(n - edge, 0)..<n { d[i] *= Float(n - 1 - i) / Float(max(edge, 1)) }
+        }
+        return (first, body)
+    }
+
+    /// Snap a 0...1 position to the nearest zero crossing (~5 ms radius).
+    func snapToZero(_ pos: Double) -> Double {
+        let f = Int(pos * Double(frameCount))
+        let z = Analysis.nearestZeroCrossing(source.mono, around: f, within: Int(sampleRate * 0.005))
+        return Double(z) / Double(frameCount)
+    }
+
+    /// Snap a 0...1 position to the source's detected beat grid (1/4 beat resolution).
+    func snapToBeat(_ pos: Double) -> Double {
+        guard let bpm = source.bpm else { return pos }
+        let grid = 60 / bpm / 4
+        let t = pos * duration
+        let snapped = source.firstBeat + ((t - source.firstBeat) / grid).rounded() * grid
+        return min(max(snapped / duration, 0), 1)
     }
 
     var safeFileName: String {
         let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>")
-        let cleaned = name.components(separatedBy: bad).joined(separator: "-").trimmingCharacters(in: .whitespaces)
+        let cleaned = p.name.components(separatedBy: bad).joined(separator: "-").trimmingCharacters(in: .whitespaces)
         return cleaned.isEmpty ? "Sample" : cleaned
     }
 }

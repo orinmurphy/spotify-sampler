@@ -5,6 +5,7 @@ let package = Package(
     name: "SpotifySampler",
     platforms: [.macOS("14.4")],
     targets: [
-        .executableTarget(name: "SpotifySampler", path: "Sources/SpotifySampler")
+        .executableTarget(name: "SpotifySampler", path: "Sources/SpotifySampler"),
+        .testTarget(name: "SpotifySamplerTests", dependencies: ["SpotifySampler"], path: "Tests/SpotifySamplerTests"),
     ]
 )

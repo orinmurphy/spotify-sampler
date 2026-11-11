@@ -44,7 +44,16 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+# Sign with a stable identity so macOS remembers the audio permission across rebuilds.
+# Override with SIGN_IDENTITY="..." ./build.sh; falls back to ad-hoc if no cert is found.
+IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -1)}"
+if [[ -n "$IDENTITY" ]]; then
+  echo "Signing with: $IDENTITY"
+  codesign --force --sign "$IDENTITY" --identifier local.spotifysampler "$APP"
+else
+  echo "No Apple Development certificate found; signing ad-hoc (permission prompts will repeat on each build)"
+  codesign --force --sign - "$APP"
+fi
 echo "Built $(pwd)/$APP"
 
 # Install over the copy in /Applications (the one pinned in the Dock).
