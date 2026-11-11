@@ -36,6 +36,33 @@ final class AnalysisTests: XCTestCase {
         }
     }
 
+    func testBeatGridFindsDownbeat() throws {
+        let rate = 48_000.0
+        for bpm in [96.0, 124.0] {
+            // Start the window mid-bar so the downbeat isn't simply the first frame.
+            let beat = Int(60 / bpm * rate)
+            let full = clickTrack(bpm: bpm, seconds: 13)
+            let skip = beat * 2 + beat / 3
+            let window = Array(full[(skip * 2)...])
+            let startFrame: Int64 = 5_000_000 + Int64(skip)
+            let grid = try XCTUnwrap(BeatGrid.estimate(window, startFrame: startFrame, sampleRate: rate))
+            XCTAssertEqual(grid.bpm, bpm, accuracy: 1.5)
+            // True downbeats sit at 5_000_000 + n * bar.
+            let rel = (grid.downbeat - 5_000_000).truncatingRemainder(dividingBy: grid.barFrames)
+            let err = min(abs(rel), abs(grid.barFrames - abs(rel)))
+            XCTAssertLessThan(err, 1500, "downbeat off by \(err) frames at \(bpm) bpm")
+        }
+    }
+
+    func testLastDownbeat() {
+        let g = BeatGrid(bpm: 120, sampleRate: 48_000, downbeat: 1_000)
+        XCTAssertEqual(g.barFrames, 96_000)
+        XCTAssertEqual(g.lastDownbeat(atOrBefore: 1_000), 1_000)
+        XCTAssertEqual(g.lastDownbeat(atOrBefore: 96_999), 1_000)
+        XCTAssertEqual(g.lastDownbeat(atOrBefore: 97_000), 97_000)
+        XCTAssertEqual(g.lastDownbeat(atOrBefore: 500), -95_000)
+    }
+
     func testTransientsFindEachHit() {
         let source = AudioSource(sampleRate: 48_000, frames: clickTrack(bpm: 120, seconds: 4))
         let onsets = Analysis.onsets(source.mono, sampleRate: 48_000, sensitivity: 0.5)

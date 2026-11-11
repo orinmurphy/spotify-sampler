@@ -9,6 +9,8 @@ It uses Core Audio **process taps** (macOS 14.4+), so it records Spotify only. O
 ## Features
 
 - **Always-on capture buffer:** it keeps the last 2 minutes. Press Return to grab the last 1–30 s, or record until you stop.
+- **Grab in bars:** tempo and downbeat are tracked live, so you can grab the last 1/2/4/8 bars ending on the last downbeat (a clean loop, no trimming). The live view shows bar lines; nudge the downbeat a beat if it's off.
+- **Works from any app:** ⌃⌥G grabs and ⌃⌥R starts/stops recording even while Spotify is in front.
 - **16 pads:** keys `1-4 / Q-R / A-F / Z-V`, or MIDI notes from C1 (bottom-left pad) with velocity. Pads are one-shot or gate, with optional choke groups.
 - **Auto-chop:** slice a region by transients (adjustable sensitivity), by beat or into 4/8/16 equal parts. Slices fill the empty pads and share the source audio.
 - **Tempo:** BPM detection, a beat grid and beat snap. Pitch either varispeed (classic) or time-stretch (pitch and tempo independent). **Sync** stretches a pad to the project BPM.
