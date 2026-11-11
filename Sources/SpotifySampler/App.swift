@@ -22,11 +22,7 @@ struct SpotifySamplerApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandMenu("Capture") {
-                Button(model.grabMode == .bars ? "Grab Last \(model.grabBars) Bars" : "Grab Last Seconds") { model.grab() }
-                    .keyboardShortcut("g")
-                Picker("Grab In", selection: Bindable(model).grabMode) {
-                    ForEach(GrabMode.allCases) { Text($0.rawValue).tag($0) }
-                }
+                Button("Grab Last Seconds") { model.grab() }.keyboardShortcut("g")
                 Button(model.isRecording ? "Stop Recording" : "Start Recording") { model.toggleRecording() }
                     .keyboardShortcut("r")
                 Divider()
@@ -181,9 +177,6 @@ struct CaptureStrip: View {
         VStack(alignment: .leading, spacing: 10) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(Color.panel)
-                if let region = model.liveRegion, !model.isRecording {
-                    GrabRegion(region: region, markers: model.liveMarkers)
-                }
                 Waveform(peaks: model.livePeaks, color: model.isRecording ? .red : .amber)
                     .padding(.vertical, 8)
                 if model.isRecording {
@@ -197,40 +190,11 @@ struct CaptureStrip: View {
             .frame(minHeight: 40, idealHeight: 72, maxHeight: 72)
 
             HStack(spacing: 14) {
-                Picker("", selection: $model.grabMode) {
-                    ForEach(GrabMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                .help("Bars: grab whole bars ending on the last downbeat. Seconds: grab a fixed length.")
-                if model.grabMode == .bars {
-                    Picker("", selection: $model.grabBars) {
-                        ForEach(AppModel.barChoices, id: \.self) { Text("\($0)").tag($0) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
-                    Group {
-                        if let g = model.beatGrid {
-                            Text(String(format: "%.1f BPM", g.bpm))
-                        } else {
-                            Text(model.connected ? "finding beat…" : "—")
-                        }
-                    }
-                    .font(.system(.body, design: .monospaced)).foregroundStyle(.secondary)
-                    .frame(width: 110, alignment: .leading)
-                    Button { model.nudgeDownbeat() } label: { Image(systemName: "arrow.right.to.line") }
-                        .disabled(model.beatGrid == nil)
-                        .help("Bar lines in the wrong place? Move the bar start one beat later.")
-                } else {
-                    Text("Buffer").foregroundStyle(.secondary)
-                    Slider(value: $model.grabSeconds, in: 1...30, step: 0.5).frame(maxWidth: 260)
-                    Text(String(format: "%.1fs", model.grabSeconds))
-                        .font(.system(.body, design: .monospaced)).frame(width: 52, alignment: .leading)
-                }
+                Text("Buffer").foregroundStyle(.secondary)
+                Slider(value: $model.grabSeconds, in: 1...30, step: 0.5).frame(maxWidth: 260)
+                Text(String(format: "%.1fs", model.grabSeconds))
+                    .font(.system(.body, design: .monospaced)).frame(width: 52, alignment: .leading)
                 Spacer()
-                if !model.globalShortcuts.isEmpty {
-                    Text("Anywhere: \(model.globalShortcuts)")
-                        .font(.caption).foregroundStyle(.tertiary)
-                        .help("These work while Spotify or any other app is in front.")
-                }
                 Button {
                     model.toggleRecording()
                 } label: {
@@ -241,7 +205,7 @@ struct CaptureStrip: View {
                 Button {
                     model.grab()
                 } label: {
-                    Label(grabLabel, systemImage: "scissors")
+                    Label(String(format: "Grab last %.1fs", model.grabSeconds), systemImage: "scissors")
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.connected)
@@ -250,42 +214,13 @@ struct CaptureStrip: View {
         }
         .padding(16)
     }
-
-    private var grabLabel: String {
-        if model.grabMode == .bars, model.beatGrid != nil {
-            return model.grabBars == 1 ? "Grab last bar" : "Grab last \(model.grabBars) bars"
-        }
-        return String(format: "Grab last %.1fs", model.grabSeconds)
-    }
-}
-
-/// Shaded span a bars grab would take, with downbeat lines.
-struct GrabRegion: View {
-    let region: ClosedRange<Double>
-    let markers: [Double]
-
-    var body: some View {
-        Canvas { ctx, size in
-            let r = CGRect(x: region.lowerBound * size.width, y: 0,
-                           width: (region.upperBound - region.lowerBound) * size.width, height: size.height)
-            ctx.fill(Path(roundedRect: r, cornerRadius: 6), with: .color(Color.amber.opacity(0.12)))
-            var lines = Path()
-            for m in markers where m >= 0 && m <= 1 {
-                let x = m * size.width
-                lines.move(to: CGPoint(x: x, y: 0))
-                lines.addLine(to: CGPoint(x: x, y: size.height))
-            }
-            ctx.stroke(lines, with: .color(.white.opacity(0.25)), lineWidth: 1)
-        }
-        .allowsHitTesting(false)
-    }
 }
 
 struct EmptyEditor: View {
     var body: some View {
         VStack(spacing: 8) {
             Image(systemName: "waveform").font(.system(size: 36)).foregroundStyle(.tertiary)
-            Text("Play something in Spotify, then hit Return (or ⌃⌥G from any app) to grab it.")
+            Text("Play something in Spotify, then hit Return — or ⌃⌥G from any app — to grab it.")
                 .foregroundStyle(.secondary)
             Text("Pads: 1-4 · Q-R · A-F · Z-V or MIDI notes from C1    Space: play/stop    ⌫: clear pad")
                 .font(.caption).foregroundStyle(.tertiary)

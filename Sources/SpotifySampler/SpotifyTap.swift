@@ -13,6 +13,8 @@ final class SpotifyTap {
 
     private(set) var processes: [AudioObjectID] = []
     private(set) var outputUID = ""
+    /// Rate the IO proc actually delivers frames at (the aggregate device's clock).
+    private(set) var sampleRate: Double = 0
 
     var isRunning: Bool { ioProcID != nil }
 
@@ -31,7 +33,7 @@ final class SpotifyTap {
             tapID = tap
 
             let format = try tapID.read(kAudioTapPropertyFormat, default: AudioStreamBasicDescription())
-            let sampleRate = format.mSampleRate > 0 ? format.mSampleRate : 48_000
+            let tapRate = format.mSampleRate > 0 ? format.mSampleRate : 48_000
 
             let aggregate: [String: Any] = [
                 kAudioAggregateDeviceNameKey: "Spotify Sampler",
@@ -50,7 +52,12 @@ final class SpotifyTap {
             try check(AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &agg), "Create aggregate device")
             aggregateID = agg
 
-            let ring = makeRing(sampleRate)
+            // Frames arrive at the aggregate device's rate (its main sub-device, i.e. the output),
+            // which can differ from the tap's format rate. Labelling them with the tap rate made
+            // samples play back fast and sharp, and threw tempo detection off by the same ratio.
+            let deviceRate = deviceSampleRate() ?? tapRate
+            sampleRate = deviceRate
+            let ring = makeRing(deviceRate)
             var procID: AudioDeviceIOProcID?
             try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, ioQueue) { _, input, _, _, _ in
                 ring.write(UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)))
@@ -65,6 +72,20 @@ final class SpotifyTap {
             stop()
             throw error
         }
+    }
+
+    /// The aggregate device's current nominal rate.
+    func deviceSampleRate() -> Double? {
+        guard aggregateID != .unknown,
+              let rate = try? aggregateID.read(kAudioDevicePropertyNominalSampleRate, default: Float64(0)),
+              rate > 0 else { return nil }
+        return rate
+    }
+
+    /// False once the output device has switched rate (e.g. a DAW changed it) since capture started.
+    var rateIsCurrent: Bool {
+        guard let now = deviceSampleRate() else { return true }
+        return abs(now - sampleRate) < 1
     }
 
     func stop() {
@@ -83,6 +104,7 @@ final class SpotifyTap {
         tapID = .unknown
         processes = []
         outputUID = ""
+        sampleRate = 0
     }
 
     deinit { stop() }

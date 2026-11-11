@@ -5,11 +5,6 @@ import os
 
 let dragLog = Logger(subsystem: "local.spotifysampler", category: "drag")
 
-enum GrabMode: String, CaseIterable, Identifiable {
-    case seconds = "Seconds", bars = "Bars"
-    var id: String { rawValue }
-}
-
 enum SnapMode: String, CaseIterable, Identifiable {
     case off = "Off", zero = "Zero-cross", beat = "Beat"
     var id: String { rawValue }
@@ -49,20 +44,6 @@ final class AppModel {
     var livePeaks: [Float] = []
     var nowPlaying = ""
     var grabSeconds: Double = 8
-    /// Bars mode grabs whole bars ending on the last downbeat, using the live beat grid.
-    var grabMode = GrabMode(rawValue: UserDefaults.standard.string(forKey: "grabMode") ?? "") ?? .bars {
-        didSet { UserDefaults.standard.set(grabMode.rawValue, forKey: "grabMode") }
-    }
-    var grabBars = UserDefaults.standard.object(forKey: "grabBars") as? Int ?? 4 {
-        didSet { UserDefaults.standard.set(grabBars, forKey: "grabBars") }
-    }
-    static let barChoices = [1, 2, 4, 8]
-    /// Tempo grid tracked continuously from what Spotify is playing.
-    var beatGrid: BeatGrid?
-    /// Downbeats in the live view (0...1 across its width) and the span a grab would take.
-    var liveMarkers: [Double] = []
-    var liveRegion: ClosedRange<Double>?
-    var globalShortcuts = ""
     var isRecording = false
     var recordSeconds: Double = 0
 
@@ -84,11 +65,7 @@ final class AppModel {
     @ObservationIgnored private var heldKeys: [UInt16: Int] = [:]
     @ObservationIgnored private var keyEventsSeen = 0
     @ObservationIgnored private let hotKeys = GlobalHotKeys()
-    @ObservationIgnored private var gridTaskRunning = false
-    @ObservationIgnored private var octaveDisagreements = 0
-    /// Beats to rotate the detected downbeat by (user nudge), kept until the track changes.
-    @ObservationIgnored private var beatShift = 0
-    @ObservationIgnored private var pendingGrab = false
+    @ObservationIgnored private var rateCheck: (time: Date, frames: Int64)?
 
     static let exportFolder: URL = {
         let music = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first!
@@ -122,7 +99,6 @@ final class AppModel {
                 MainActor.assumeIsolated {
                     self?.refreshConnection()
                     self?.autosave()
-                    self?.updateBeatGrid()
                 }
             },
             Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
@@ -154,7 +130,10 @@ final class AppModel {
             status = spotifyRunning ? "Spotify is open — press play" : "Open Spotify to start sampling"
             return
         }
-        if tap.isRunning, processes == tap.processes, outputUID == tap.outputUID { return }
+        if tap.isRunning, processes == tap.processes, outputUID == tap.outputUID, tap.rateIsCurrent {
+            checkMeasuredRate()
+            return
+        }
 
         do {
             let existing = ring
@@ -164,11 +143,27 @@ final class AppModel {
             }
             if newRing !== ring, isRecording { isRecording = false }
             ring = newRing
+            rateCheck = nil
             connected = true
             status = "Listening to Spotify"
         } catch {
             connected = false
             status = error.localizedDescription
+        }
+    }
+
+    /// Sanity check: frames written per second of wall clock should match the buffer's rate.
+    private func checkMeasuredRate() {
+        guard let ring else { return }
+        let now = (time: Date(), frames: ring.totalFrames)
+        guard let start = rateCheck else { rateCheck = now; return }
+        let dt = now.time.timeIntervalSince(start.time)
+        guard dt >= 6 else { return }
+        rateCheck = now
+        let measured = Double(now.frames - start.frames) / dt
+        if abs(measured / ring.sampleRate - 1) > 0.03 {
+            tap.stop()
+            refreshConnection()
         }
     }
 
@@ -183,7 +178,7 @@ final class AppModel {
             return
         }
         level = max(ring.takePeak(), level * 0.85)
-        updateLiveView(ring)
+        livePeaks = ring.peaks(lastFrames: Int(grabSeconds * ring.sampleRate), buckets: 280)
         if isRecording {
             recordSeconds = Double(ring.totalFrames - recordStart) / ring.sampleRate
             if recordSeconds >= Self.historySeconds - 2 { toggleRecording() }
@@ -211,149 +206,26 @@ final class AppModel {
         return ""
         """
         var error: NSDictionary?
-        let track = NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue ?? ""
-        if track != nowPlaying, !track.isEmpty, !nowPlaying.isEmpty {
-            // New song: the old grid is meaningless.
-            beatGrid = nil
-            beatShift = 0
-            octaveDisagreements = 0
-        }
-        nowPlaying = track
-    }
-
-    // MARK: Grab
-
-    /// Seconds shown in the live view: the grab length, plus some lead-in in bars mode.
-    var liveWindowSeconds: Double {
-        if grabMode == .bars, let g = beatGrid {
-            return min(Double(grabBars) * g.barFrames / g.sampleRate * 1.3, Self.historySeconds)
-        }
-        return grabSeconds
-    }
-
-    private func updateLiveView(_ ring: RingBuffer) {
-        let window = Int(liveWindowSeconds * ring.sampleRate)
-        livePeaks = ring.peaks(lastFrames: window, buckets: 280)
-        guard grabMode == .bars, let g = beatGrid, window > 0 else {
-            liveMarkers = []
-            liveRegion = nil
-            return
-        }
-        let now = ring.totalFrames
-        let left = Double(now) - Double(window)
-        func x(_ f: Double) -> Double { (f - left) / Double(window) }
-        var markers: [Double] = []
-        var d = g.lastDownbeat(atOrBefore: now)
-        while d >= left {
-            markers.append(x(d))
-            d -= g.barFrames
-        }
-        liveMarkers = markers
-        let end = g.lastDownbeat(atOrBefore: now)
-        let lo = max(0, x(end - Double(grabBars) * g.barFrames)), hi = min(1, x(end))
-        liveRegion = lo <= hi ? lo...hi : nil
-    }
-
-    /// Re-estimate tempo and downbeat from the last 12 s, off the main thread.
-    private func updateBeatGrid() {
-        guard let ring, connected, !gridTaskRunning, !nowPlaying.isEmpty else { return }
-        gridTaskRunning = true
-        let rate = ring.sampleRate
-        Task.detached(priority: .utility) { [weak self] in
-            let end = ring.totalFrames
-            let frames = ring.copy(from: end - Int64(12 * rate), to: end)
-            let start = end - Int64(frames.count / 2)
-            let estimate = frames.count / 2 >= Int(8 * rate)
-                ? BeatGrid.estimate(frames, startFrame: start, sampleRate: rate) : nil
-            await self?.applyBeatGrid(estimate)
-        }
-    }
-
-    private func applyBeatGrid(_ estimate: BeatGrid?) {
-        gridTaskRunning = false
-        guard var grid = estimate else { return } // keep the last grid through quiet bits
-        if let old = beatGrid, abs(abs(log2(grid.bpm / old.bpm)) - 1) < 0.05, octaveDisagreements < 3 {
-            // Half/double-time flip: keep the established tempo unless it keeps happening.
-            octaveDisagreements += 1
-            return
-        }
-        octaveDisagreements = 0
-        grid.downbeat += Double(beatShift) * grid.beatFrames
-        beatGrid = grid
-    }
-
-    /// Move the bar start one beat later (when the detected "1" is wrong).
-    func nudgeDownbeat() {
-        guard var g = beatGrid else { return }
-        beatShift = (beatShift + 1) % 4
-        g.downbeat += g.beatFrames
-        beatGrid = g
+        nowPlaying = NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue ?? ""
     }
 
     func grab() {
         guard let ring else { return }
-        guard grabMode == .bars else {
-            grabLastSeconds(ring)
-            return
-        }
-        guard let g = beatGrid else {
-            grabLastSeconds(ring)
-            hint = "No beat found yet, so that was a \(Int(grabSeconds)) s grab. Bars mode needs a few seconds of music with a beat."
-            return
-        }
-        guard !pendingGrab else { return }
-        let now = ring.totalFrames
-        let end = g.lastDownbeat(atOrBefore: now)
-        let next = end + g.barFrames
-        let ahead = (next - Double(now)) / ring.sampleRate
-        if ahead < 0.5 * 60 / g.bpm {
-            // Pressed just before a downbeat: wait for it so the bar that's finishing is included.
-            pendingGrab = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + ahead + 0.03) { [weak self] in
-                guard let self else { return }
-                self.pendingGrab = false
-                if let ring = self.ring { self.grabBars(ring, grid: g, end: next) }
-            }
-            return
-        }
-        grabBars(ring, grid: g, end: end)
+        grabFeedback(addSource(ring.latest(frames: Int(grabSeconds * ring.sampleRate)), rate: ring.sampleRate))
     }
 
-    private func grabLastSeconds(_ ring: RingBuffer) {
-        let added = addSource(ring.latest(frames: Int(grabSeconds * ring.sampleRate)), rate: ring.sampleRate)
-        grabFeedback(added)
-    }
-
-    private func grabBars(_ ring: RingBuffer, grid g: BeatGrid, end: Double) {
-        let start = end - Double(grabBars) * g.barFrames
-        let frames = ring.copy(from: Int64(start.rounded()), to: Int64(end.rounded()))
-        let base = nowPlaying.isEmpty ? "Sample \(sampleCounter + 1)" : nowPlaying
-        let bars = grabBars == 1 ? "1 bar" : "\(grabBars) bars"
-        let added = addSource(frames, rate: ring.sampleRate, name: "\(base) · \(bars)")
-        if added != nil, projectBPMIsDefault { projectBPM = g.bpm }
-        grabFeedback(added)
-    }
-
-    /// True while the project tempo hasn't been set by hand or by a kit.
-    private var projectBPMIsDefault: Bool { pads.compactMap { $0 }.count <= 1 && projectBPM == 120 }
-
-    /// When the window isn't in front, a soft click confirms the grab (the tap only records Spotify, so it isn't captured).
+    /// When the window isn't in front, a soft click confirms the grab (only Spotify is recorded, so it isn't captured).
     private func grabFeedback(_ sample: Sample?) {
         guard !NSApp.isActive else { return }
         NSSound(named: sample == nil ? "Basso" : "Tink")?.play()
     }
 
+    /// ⌃⌥G grabs and ⌃⌥R records from any app.
     private func registerGlobalShortcuts() {
-        var ok: [String] = []
-        if hotKeys.register(.grab, action: { [weak self] in MainActor.assumeIsolated { self?.grab() } }) {
-            ok.append("\(GlobalHotKeys.Shortcut.grab.label) grab")
-        }
-        if hotKeys.register(.record, action: { [weak self] in MainActor.assumeIsolated { self?.toggleRecording() } }) {
-            ok.append("\(GlobalHotKeys.Shortcut.record.label) record")
-        }
-        globalShortcuts = ok.joined(separator: " · ")
-        if ok.count < 2 {
-            hint = "Another app is using ⌃⌥G or ⌃⌥R, so that global shortcut is off."
+        let grabbed = hotKeys.register(.grab) { [weak self] in MainActor.assumeIsolated { self?.grab() } }
+        let recorded = hotKeys.register(.record) { [weak self] in MainActor.assumeIsolated { self?.toggleRecording() } }
+        if !grabbed || !recorded {
+            hint = "Another app is using ⌃⌥G or ⌃⌥R, so that shortcut only works inside Spotify Sampler."
         }
     }
 
