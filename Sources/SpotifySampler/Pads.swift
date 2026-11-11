@@ -60,14 +60,8 @@ struct PadView: View {
             model.trigger(index)
         }
         .onDrag { model.dragProvider(for: index) }
-        .onDrop(of: [AppModel.padDragType], isTargeted: $dropTarget) { providers in
-            guard let provider = providers.first else { return false }
-            let copy = NSEvent.modifierFlags.contains(.option)
-            _ = provider.loadDataRepresentation(forTypeIdentifier: AppModel.padDragType) { data, _ in
-                guard let data, let from = Int(String(decoding: data, as: UTF8.self)) else { return }
-                DispatchQueue.main.async { model.movePad(from: from, to: index, copy: copy) }
-            }
-            return true
+        .onDrop(of: [AppModel.padDragType, "public.file-url"], isTargeted: $dropTarget) { providers in
+            model.handleDrop(providers, on: index, copy: NSEvent.modifierFlags.contains(.option))
         }
         .contextMenu {
             if let sample {

@@ -161,5 +161,25 @@ final class PadMoveTests: XCTestCase {
         let provider = model.dragProvider(for: 1)
         XCTAssert(provider.hasItemConformingToTypeIdentifier(AppModel.padDragType))
         XCTAssert(provider.hasItemConformingToTypeIdentifier("public.file-url"), "still drags a WAV to other apps")
+
+        // Full drop path as the pad grid calls it: drag pad 1 (A), drop on pad 5 (B) → swap.
+        XCTAssertEqual(model.draggingPad, 1)
+        XCTAssertTrue(model.handleDrop([provider], on: 5, copy: false))
+        XCTAssert(model.pads[5] === a && model.pads[1] === b)
+        XCTAssertNil(model.draggingPad)
+    }
+
+    @MainActor
+    func testDropAudioFileFromFinder() async throws {
+        let model = AppModel()
+        model.pads = Array(repeating: nil, count: 16)
+        let source = AudioSource(sampleRate: 44_100, frames: [Float](repeating: 0.1, count: 44_100 * 2))
+        let s = Sample(source: source, params: SampleParams(name: "x"))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Finder Loop.wav")
+        try SamplerEngine.writeWAV(try SamplerEngine.renderOffline(s, projectBPM: 120), to: url)
+        XCTAssertTrue(model.handleDrop([NSItemProvider(contentsOf: url)!], on: 7, copy: false))
+        for _ in 0..<40 where model.pads[7] == nil { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(model.pads[7]?.p.name, "Finder Loop")
+        XCTAssertEqual(model.pads[7]?.sampleRate, 44_100)
     }
 }

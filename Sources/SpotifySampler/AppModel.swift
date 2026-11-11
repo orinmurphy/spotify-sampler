@@ -481,6 +481,7 @@ final class AppModel {
     /// Drag a pad straight into Finder, Ableton, Logic, etc.
     func dragProvider(for index: Int) -> NSItemProvider {
         guard let sample = pads[index] else { return NSItemProvider() }
+        draggingPad = index
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SpotifySamplerDrag", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(sample.safeFileName).wav")
@@ -489,7 +490,7 @@ final class AppModel {
             .flatMap { (try? SamplerEngine.writeWAV($0, to: url)) != nil ? NSItemProvider(contentsOf: url) : nil }
             ?? NSItemProvider()
         // Private type so pads can be rearranged inside the app; other apps only see the WAV.
-        provider.registerDataRepresentation(forTypeIdentifier: Self.padDragType, visibility: .ownProcess) { done in
+        provider.registerDataRepresentation(forTypeIdentifier: Self.padDragType, visibility: .all) { done in
             done(Data(String(index).utf8), nil)
             return nil
         }
@@ -497,6 +498,36 @@ final class AppModel {
     }
 
     static let padDragType = "local.spotifysampler.pad"
+
+    /// The pad currently being dragged. Tracked here because macOS doesn't reliably hand
+    /// private drag data back to the drop target.
+    @ObservationIgnored var draggingPad: Int?
+
+    /// Handles a drop onto pad `index`: another pad (move/swap/copy) or audio files from Finder.
+    func handleDrop(_ providers: [NSItemProvider], on index: Int, copy: Bool) -> Bool {
+        if let from = draggingPad, providers.contains(where: { $0.hasItemConformingToTypeIdentifier(Self.padDragType) }) {
+            draggingPad = nil
+            movePad(from: from, to: index, copy: copy)
+            return true
+        }
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: URL.self) }) else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            DispatchQueue.main.async { self.importFile(url, into: index) }
+        }
+        return true
+    }
+
+    func importFile(_ url: URL, into index: Int) {
+        do {
+            let source = try KitStore.readSource(url)
+            if let old = pads[index] { sampler.remove(old); playing.remove(old.id) }
+            pads[index] = Sample(source: source, params: SampleParams(name: url.deletingPathExtension().lastPathComponent))
+            selectedPad = index
+        } catch {
+            hint = "Couldn't load \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
 
     /// Drop pad `from` onto pad `to`: moves into an empty slot, swaps with a filled one,
     /// or (copy) duplicates it, sharing the same audio.
