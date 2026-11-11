@@ -53,7 +53,10 @@ struct PadView: View {
         )
         .foregroundStyle(playing ? Color.black : Color.primary)
         .contentShape(Rectangle())
-        .onTapGesture { model.trigger(index) }
+        .onTapGesture {
+            model.endEditing()
+            model.trigger(index)
+        }
         .onDrag { model.dragProvider(for: index) }
         .contextMenu {
             if let sample {

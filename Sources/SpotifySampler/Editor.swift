@@ -21,6 +21,7 @@ struct SampleEditor: View {
             // Title row
             HStack(spacing: 12) {
                 TextField("Name", text: $sample.p.name).textFieldStyle(.plain).font(.title3.bold())
+                    .onSubmit { model.endEditing() }
                 Spacer()
                 if let bpm = sample.source.bpm {
                     Label(String(format: "%.1f bpm", bpm), systemImage: "metronome")

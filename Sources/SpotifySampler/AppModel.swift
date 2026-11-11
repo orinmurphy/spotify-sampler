@@ -54,6 +54,7 @@ final class AppModel {
     @ObservationIgnored private var sampleCounter = 0
     @ObservationIgnored private var lastSaved: Data?
     @ObservationIgnored private var heldKeys: [UInt16: Int] = [:]
+    @ObservationIgnored private var keyEventsSeen = 0
 
     static let exportFolder: URL = {
         let music = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first!
@@ -485,8 +486,17 @@ final class AppModel {
 
     // MARK: Keyboard
 
+    /// Give the keyboard back to the pads (ends any text editing).
+    func endEditing() {
+        for window in NSApp.windows { window.makeFirstResponder(nil) }
+    }
+
     private func handleKey(_ event: NSEvent) -> NSEvent? {
-        if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+        keyEventsSeen += 1
+        if NSApp.keyWindow?.firstResponder is NSTextView {
+            if event.type == .keyDown, event.keyCode == 53 { endEditing(); return nil } // Esc
+            return event
+        }
         if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return event }
         if event.type == .keyUp {
             if let index = heldKeys.removeValue(forKey: event.keyCode) { releasePad(index); return nil }
@@ -542,6 +552,25 @@ final class AppModel {
                     report["exported"] = wav.path
                 }
             }
+            report["firstResponderAtLaunch"] = NSApp.windows.first(where: { $0.isVisible })?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+            kitID = ""
+            pads = Array(repeating: nil, count: 16)
+            var silent = SampleParams(name: "keytest")
+            silent.gain = 0
+            let pad = Sample(source: AudioSource(sampleRate: 48_000, frames: [Float](repeating: 0, count: 96_000)), params: silent)
+            pads[4] = pad // "Q"
+            NSApp.activate(ignoringOtherApps: true)
+            let window = NSApp.windows.first { $0.isVisible }
+            if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                            windowNumber: window?.windowNumber ?? 0, context: nil, characters: "q",
+                                            charactersIgnoringModifiers: "q", isARepeat: false, keyCode: 12) {
+                NSApp.postEvent(event, atStart: false)
+            }
+            try? await Task.sleep(for: .milliseconds(300))
+            report["keyQTriggeredPad"] = playing.contains(pad.id) && selectedPad == 4
+            report["keyEventsSeen"] = keyEventsSeen
+            report["selectedPadAfterKey"] = selectedPad
+            report["appActive"] = NSApp.isActive
             if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
                 try? data.write(to: output)
             }

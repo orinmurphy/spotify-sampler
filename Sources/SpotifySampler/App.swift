@@ -76,7 +76,13 @@ struct ContentView: View {
                 .padding(16)
                 .layoutPriority(1)
         }
-        .background(Color(white: 0.07))
+        .background(Color(white: 0.07).onTapGesture { model.endEditing() })
+        .onAppear {
+            // SwiftUI focuses the first text field in a new window, which would swallow pad keys.
+            for delay in [0.05, 0.4] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { model.endEditing() }
+            }
+        }
     }
 }
 
@@ -113,12 +119,14 @@ struct HeaderBar: View {
             .fixedSize()
             TextField("Kit name", text: $model.kitName)
                 .textFieldStyle(.roundedBorder)
+                .onSubmit { model.endEditing() }
                 .frame(width: 150)
 
             HStack(spacing: 4) {
                 Text("BPM").foregroundStyle(.secondary)
                 TextField("BPM", value: $model.projectBPM, format: .number.precision(.fractionLength(0...1)))
                     .textFieldStyle(.roundedBorder).frame(width: 56)
+                    .onSubmit { model.endEditing() }
                 Stepper("", value: $model.projectBPM, in: 40...240, step: 1).labelsHidden()
             }
             .help("Project tempo. Pads with Sync on are stretched to this tempo.")
