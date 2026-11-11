@@ -1,4 +1,29 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Explicit drop handling: always proposes an operation the drag source allows (copy), and logs
+/// each step to the system log (subsystem local.spotifysampler, category drag).
+struct PadDropDelegate: DropDelegate {
+    let index: Int
+    let model: AppModel
+    @Binding var isTargeted: Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        dragLog.notice("validate pad=\(index)")
+        return true
+    }
+
+    func dropEntered(info: DropInfo) { isTargeted = true }
+    func dropExited(info: DropInfo) { isTargeted = false }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        isTargeted = false
+        let providers = info.itemProviders(for: [UTType(AppModel.padDragType) ?? .data, .fileURL])
+        dragLog.notice("performDrop pad=\(index) providers=\(providers.count)")
+        return model.handleDrop(providers, on: index, copy: NSEvent.modifierFlags.contains(.option))
+    }
+}
 
 struct PadGrid: View {
     var body: some View {
@@ -60,9 +85,8 @@ struct PadView: View {
             model.trigger(index)
         }
         .onDrag { model.dragProvider(for: index) }
-        .onDrop(of: [AppModel.padDragType, "public.file-url"], isTargeted: $dropTarget) { providers in
-            model.handleDrop(providers, on: index, copy: NSEvent.modifierFlags.contains(.option))
-        }
+        .onDrop(of: [UTType(AppModel.padDragType) ?? .data, .fileURL],
+                delegate: PadDropDelegate(index: index, model: model, isTargeted: $dropTarget))
         .contextMenu {
             if let sample {
                 Button("Export WAV") { model.export(sample) }

@@ -1,6 +1,9 @@
 import AppKit
 import Foundation
 import Observation
+import os
+
+let dragLog = Logger(subsystem: "local.spotifysampler", category: "drag")
 
 enum SnapMode: String, CaseIterable, Identifiable {
     case off = "Off", zero = "Zero-cross", beat = "Beat"
@@ -482,6 +485,8 @@ final class AppModel {
     func dragProvider(for index: Int) -> NSItemProvider {
         guard let sample = pads[index] else { return NSItemProvider() }
         draggingPad = index
+        dragStarted = Date()
+        dragLog.notice("drag start pad=\(index)")
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SpotifySamplerDrag", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(sample.safeFileName).wav")
@@ -502,16 +507,22 @@ final class AppModel {
     /// The pad currently being dragged. Tracked here because macOS doesn't reliably hand
     /// private drag data back to the drop target.
     @ObservationIgnored var draggingPad: Int?
+    @ObservationIgnored var dragStarted = Date.distantPast
 
     /// Handles a drop onto pad `index`: another pad (move/swap/copy) or audio files from Finder.
     func handleDrop(_ providers: [NSItemProvider], on index: Int, copy: Bool) -> Bool {
-        if let from = draggingPad, providers.contains(where: { $0.hasItemConformingToTypeIdentifier(Self.padDragType) }) {
+        let types = providers.flatMap(\.registeredTypeIdentifiers)
+        dragLog.notice("drop on pad=\(index) dragging=\(self.draggingPad.map(String.init) ?? "nil") types=\(types.joined(separator: ","))")
+        // Any drop within a minute of picking up a pad is that pad being moved; macOS doesn't
+        // reliably pass the in-app payload through, so don't depend on it.
+        if let from = draggingPad, Date().timeIntervalSince(dragStarted) < 60 {
             draggingPad = nil
             movePad(from: from, to: index, copy: copy)
             return true
         }
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: URL.self) }) else { return false }
-        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+        _ = provider.loadObject(ofClass: URL.self) { url, error in
+            dragLog.notice("file drop url=\(url?.path ?? "nil") error=\(error?.localizedDescription ?? "none")")
             guard let url else { return }
             DispatchQueue.main.async { self.importFile(url, into: index) }
         }
