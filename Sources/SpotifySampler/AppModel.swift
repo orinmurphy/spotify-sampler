@@ -23,6 +23,12 @@ final class AppModel {
     var kits: [KitInfo] = []
     var projectBPM: Double = 120 { didSet { sampler.projectBPM = projectBPM; pads.compactMap { $0 }.forEach(sampler.update) } }
 
+    /// Mono: hitting a pad stops whatever else is playing (best for chopped songs).
+    /// Off = pads overlap (drum-kit style); choke groups still apply.
+    var monoPads = UserDefaults.standard.object(forKey: "monoPads") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(monoPads, forKey: "monoPads") }
+    }
+
     // Editing
     var snap: SnapMode = .zero
     var chopSensitivity = 0.5
@@ -237,9 +243,9 @@ final class AppModel {
     }
 
     func play(_ sample: Sample, velocity: Float = 1) {
-        if sample.p.choke > 0 {
-            for other in pads.compactMap({ $0 }) where other.id != sample.id && other.p.choke == sample.p.choke {
-                if playing.contains(other.id) { sampler.release(other) }
+        for other in pads.compactMap({ $0 }) where other.id != sample.id && playing.contains(other.id) {
+            if monoPads || (sample.p.choke > 0 && other.p.choke == sample.p.choke) {
+                sampler.release(other)
             }
         }
         sampler.play(sample, velocity: velocity)

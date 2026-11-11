@@ -122,6 +122,11 @@ struct HeaderBar: View {
                 .onSubmit { model.endEditing() }
                 .frame(width: 150)
 
+            Toggle(isOn: $model.monoPads) { Label("Mono", systemImage: "1.circle") }
+                .toggleStyle(.button)
+                .help(model.monoPads ? "Mono: a new pad stops the one that's playing. Turn off to layer pads."
+                                     : "Poly: pads overlap. Turn on so a new pad stops the one that's playing.")
+
             HStack(spacing: 4) {
                 Text("BPM").foregroundStyle(.secondary)
                 TextField("BPM", value: $model.projectBPM, format: .number.precision(.fractionLength(0...1)))

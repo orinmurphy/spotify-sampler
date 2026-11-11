@@ -100,3 +100,34 @@ final class AnalysisTests: XCTestCase {
         XCTAssert(snapped == 0 || m[snapped - 1].sign != m[snapped].sign || m[snapped] == 0)
     }
 }
+
+final class PadModeTests: XCTestCase {
+    override class func setUp() {
+        setenv("SPOTIFY_SAMPLER_DATA_DIR", NSTemporaryDirectory() + "sampler-test-\(UUID().uuidString)", 1)
+    }
+
+    @MainActor
+    func testMonoStopsOtherPadsPolyLayers() async throws {
+        let model = AppModel()
+        let previous = model.monoPads
+        defer { model.monoPads = previous }
+        var quiet = SampleParams(name: "a")
+        quiet.gain = 0
+        let source = AudioSource(sampleRate: 48_000, frames: [Float](repeating: 0, count: 96_000 * 2))
+        let a = Sample(source: source, params: quiet), b = Sample(source: source, params: quiet)
+        model.pads[0] = a
+        model.pads[1] = b
+
+        model.monoPads = true
+        model.trigger(0)
+        model.trigger(1)
+        try await Task.sleep(for: .milliseconds(150)) // > release fade
+        XCTAssertFalse(model.playing.contains(a.id), "mono: pad 1 should stop pad 0")
+        XCTAssertTrue(model.playing.contains(b.id))
+
+        model.monoPads = false
+        model.trigger(0)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(model.playing.contains(a.id) && model.playing.contains(b.id), "poly: both should play")
+    }
+}
